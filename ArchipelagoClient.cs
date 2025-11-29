@@ -35,6 +35,7 @@ namespace Archipelago.Core
         public event EventHandler<LocationCompletedEventArgs>? LocationCompleted;
         public event EventHandler? GameDisconnected;
         public Func<bool>? EnableLocationsCondition;
+        public Func<bool>? EnableItemsCondition;
         public ItemsHandlingFlags? itemsFlags { get; set; }
         public int itemsReceivedCurrentSession { get; set; }
         public bool isReadyToReceiveItems { get; set; }
@@ -294,15 +295,23 @@ namespace Archipelago.Core
                             Id = newItemInfo.ItemId,
                             Name = newItemInfo.ItemName,
                         };
+                        /* while unable to receive items, wait */
+                        while ((EnableItemsCondition?.Invoke() ?? true) == false)
+                        {
+                            Log.Debug($"Game not able to receive items (item={newItemInfo.ItemName}). Trying again in 500ms.");
+                            await Task.Delay(500, cancellationToken);
+                        }
+                        /* Now able to receive items */
                         Log.Debug($"Adding new item {item.Name}");
-                        GameState.ReceivedItems.Enqueue(item);
-                        GameState.LastCheckedIndex = itemsReceivedCurrentSession;
-                        receivedNewItems = true;
                         ItemReceived?.Invoke(this, new ItemReceivedEventArgs() { 
                             Item = item, 
                             LocationId = newItemInfo.LocationId,
                             Player = newItemInfo.Player
                         });
+                        receivedNewItems = true;
+
+                        GameState.ReceivedItems.Enqueue(item);
+                        GameState.LastCheckedIndex = itemsReceivedCurrentSession;
                     }
                     else
                     {
