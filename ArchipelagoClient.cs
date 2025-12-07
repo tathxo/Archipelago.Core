@@ -35,6 +35,7 @@ namespace Archipelago.Core
         public event EventHandler<LocationCompletedEventArgs>? LocationCompleted;
         public event EventHandler? GameDisconnected;
         public Func<bool>? EnableLocationsCondition;
+        public Func<int, bool>? MatchLastItem;
         public ItemsHandlingFlags? itemsFlags { get; set; }
         public int itemsReceivedCurrentSession { get; set; }
         public bool isReadyToReceiveItems { get; set; }
@@ -43,6 +44,8 @@ namespace Archipelago.Core
         private List<ILocation> _monitoredLocations { get; set; } = new List<ILocation>();
 
         private Channel<ILocation> _locationsChannel;
+        Queue<ItemInfo> QueuedItems = [];
+        private bool receiveLooperRunning = false;
         private List<Task> _workerTasks = new List<Task>();
         private const int WORKER_COUNT = 8;
         public GPSHandler GPSHandler
@@ -297,7 +300,17 @@ namespace Archipelago.Core
 
                 bool receivedNewItems = false;
 
+                /* Move all the sent items into a queue */
                 ItemInfo newItemInfo = CurrentSession.Items.DequeueItem();
+                while (newItemInfo != null)
+                {
+                    Log.Logger.Debug($"Added item {newItemInfo.ItemName} to queue");
+                    QueuedItems.Enqueue(newItemInfo);
+                    newItemInfo = CurrentSession.Items.DequeueItem();
+                }
+
+                /* Then, receive all the items */
+                QueuedItems.TryPeek(out newItemInfo);
                 while (newItemInfo != null)
                 {
                     itemsReceivedCurrentSession++;
@@ -310,21 +323,46 @@ namespace Archipelago.Core
                         };
                         Log.Debug($"Adding new item {item.Name}");
 
-                        ItemState.ReceivedItems.Enqueue(item);
-                        ItemState.LastCheckedIndex = itemsReceivedCurrentSession;
-                        receivedNewItems = true;
-                        ItemReceived?.Invoke(this, new ItemReceivedEventArgs() { 
-                            Item = item, 
+                        ItemReceived?.Invoke(this, new ItemReceivedEventArgs()
+                        {
+                            Item = item,
                             LocationId = newItemInfo.LocationId,
-                            Player = newItemInfo.Player
+                            Player = newItemInfo.Player,
+                            Index = itemsReceivedCurrentSession
                         });
+
+                        /* If item was received, add it to the list to save */
+                        if (MatchLastItem?.Invoke(itemsReceivedCurrentSession) ?? true)
+                        {
+                            ItemState.ReceivedItems.Enqueue(item);
+                            ItemState.LastCheckedIndex = itemsReceivedCurrentSession;
+                            receivedNewItems = true;
+                        }
+                        else /* item didn't get received - try again later */
+                        {
+                            itemsReceivedCurrentSession--;
+                            if (!receiveLooperRunning)
+                            {
+                                Log.Logger.Warning($"Failed to receive item {item.Name} and {QueuedItems.Count-1} other items, retrying in 5 seconds");
+                                Task.Run(async () =>
+                                {
+                                    await Task.Delay(5000);
+                                    ReceiveItems(cancellationToken);
+                                    receiveLooperRunning = false;
+                                });
+                                receiveLooperRunning = true;
+                            }
+                                
+                            break;
+                        }
                     }
                     else
                     {
                         Log.Verbose($"Fast forwarding past previously received item {newItemInfo.ItemName}");
                     }
 
-                    newItemInfo = CurrentSession.Items.DequeueItem();
+                    QueuedItems.Dequeue();
+                    QueuedItems.TryPeek(out newItemInfo);
                 }
 
                 if (receivedNewItems)
