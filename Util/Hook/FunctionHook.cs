@@ -27,7 +27,7 @@ namespace Archipelago.Core.Util.Hook
         public Func<HookContext, bool> ShouldCallOriginal { get; set; } = _ => true;
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         private delegate bool NativeHookCallback(IntPtr parameters, int paramCount);
-        public FunctionHook(IntPtr targetAddress, HookCallback callback, int hookSize = 5, bool executeOriginalInstructions = true)
+        public FunctionHook(IntPtr targetAddress, HookCallback callback, int hookSize = 14, bool executeOriginalInstructions = true)
         {
             _targetAddress = targetAddress;
             _processHandle = Memory.GetProcessH(Memory.CurrentProcId);
@@ -55,6 +55,7 @@ namespace Archipelago.Core.Util.Hook
         private IntPtr CreateHookStub()
         {
             IntPtr stubMemory = Memory.Allocate(1024, Memory.PAGE_EXECUTE_READWRITE);
+            Log.Logger.Warning($"hook alloced at {stubMemory.ToString("X")}");
             byte[] stubCode = GenerateHookStub();
             Memory.Write((ulong)stubMemory, stubCode);
             return stubMemory;
@@ -110,7 +111,7 @@ namespace Archipelago.Core.Util.Hook
                 0x41, 0x51,                    // push r9
                 0x41, 0x52,                    // push r10
                 0x41, 0x53,                    // push r11
-                0x48, 0x83, 0xEC, 0x20,        // sub rsp, 0x20 (shadow space)
+                0x48, 0x83, 0xEC, 0x60,        // sub rsp, 0x60 (shadow space)
             });
 
                 // Store parameters (RCX, RDX, R8, R9, and stack params)
@@ -154,7 +155,7 @@ namespace Archipelago.Core.Util.Hook
 
                     // Restore registers for original call
                     code.AddRange(new byte[] {
-                    0x48, 0x83, 0xC4, 0x20,        // add rsp, 0x20
+                    0x48, 0x83, 0xC4, 0x60,        // add rsp, 0x60
                     0x41, 0x5B,                    // pop r11
                     0x41, 0x5A,                    // pop r10
                     0x41, 0x59,                    // pop r9
@@ -266,15 +267,25 @@ namespace Archipelago.Core.Util.Hook
 
         private byte[] CreateJumpInstruction(IntPtr from, IntPtr to)
         {
-            long offset = (long)to - (long)from - 5;
-            return new byte[]
+            //long offset = (long)to - (long)from - 14;
+            long offset = (long)to;
+            var bytes = new byte[]
             {
-            0xE9,                           // JMP relative
+                0xff, 0x25, 0x00, 0x00, 0x00, 0x00,       //jmp    QWORD PTR [rip+0x0]        # 6 <_main+0x6>
             (byte)(offset & 0xFF),
             (byte)((offset >> 8) & 0xFF),
             (byte)((offset >> 16) & 0xFF),
-            (byte)((offset >> 24) & 0xFF)
-            };
+            (byte)((offset >> 24) & 0xFF),
+            (byte)((offset >> 32) & 0xFF),
+            (byte)((offset >> 40) & 0xFF),
+            (byte)((offset >> 48) & 0xFF),
+            (byte)((offset >> 56) & 0xFF)
+            }.ToList();
+            for (int i = bytes.Count; i < _hookSize; i++)
+            {
+                bytes.Add(0x90);
+            }
+            return bytes.ToArray();
         }
         public bool Install()
         {
